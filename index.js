@@ -15,7 +15,7 @@ import 'dotenv/config';
 import { Client, GatewayIntentBits, EmbedBuilder, Events } from 'discord.js';
 import { aiParseCommand, aiChat, aiTransactionReply } from './ai.js';
 import express from 'express';
-import { initSupabase, getSupabase, getProfileByDiscordId, getProfileByMonitag, isCommandProcessed, logCommand, updateCommandStatus, logMonibotTransaction, upsertDiscordServer, markServerInactive, createScheduledJob } from './database.js';
+import { initSupabase, getSupabase, getProfileByDiscordId, getProfileByMonitag, isCommandProcessed, logCommand, updateCommandStatus, logMonibotTransaction, upsertDiscordServer, markServerInactive, createScheduledJob, getCompletedScheduledJobs } from './database.js';
 import { parseCommand, parseScheduleViaEdge, getTimeGreeting, getHelpContent, getSetupContent, getWelcomeContent } from './commands.js';
 import { executeP2P, executeGrant, getBalance, CHAIN_CONFIGS } from './blockchain.js';
 import { findAlternateChain } from './crossChainCheck.js';
@@ -776,6 +776,82 @@ async function handleChat(message, text) {
 }
 
 
+
+// ============ Scheduled Job Notification Poller ============
+
+const notifiedJobIds = new Set();
+
+async function pollScheduledJobResults() {
+  try {
+    const jobs = await getCompletedScheduledJobs();
+    for (const job of jobs) {
+      if (notifiedJobIds.has(job.id)) continue;
+      notifiedJobIds.add(job.id);
+
+      const channelId = job.payload?.channelId;
+      if (!channelId) continue;
+
+      const channel = client.channels.cache.get(channelId);
+      if (!channel) continue;
+
+      const senderTag = job.payload?.senderPayTag || 'Unknown';
+      const recipients = job.payload?.command?.recipients || job.payload?.recipients || [];
+      const amount = job.payload?.command?.amount || job.payload?.amount || '?';
+
+      if (job.status === 'completed' && job.result) {
+        const txHash = job.result.txHash || job.result.results?.[0]?.txHash;
+        const chain = job.payload?.command?.chain || job.payload?.chain || 'base';
+        const explorerUrl = getExplorerUrl(chain, txHash || '');
+
+        const embed = new EmbedBuilder()
+          .setTitle('⏰ Scheduled Payment Complete!')
+          .setDescription(`**@${senderTag}**'s scheduled payment has been executed.`)
+          .addFields(
+            { name: 'Amount', value: `$${amount}`, inline: true },
+            { name: 'To', value: recipients.map(r => `@${r}`).join(', ') || 'N/A', inline: true },
+          )
+          .setColor(0x00FF00)
+          .setFooter({ text: `Job ID: ${job.id}` });
+
+        if (txHash) {
+          embed.addFields({ name: 'TX', value: `[View on Explorer](${explorerUrl})\n\`${txHash}\``, inline: false });
+        }
+
+        if (job.result.results) {
+          const summary = job.result.results.map(r =>
+            r.status === 'success' ? `✅ @${r.tag}` : `❌ @${r.tag}: ${r.reason}`
+          ).join('\n');
+          embed.addFields({ name: 'Results', value: summary, inline: false });
+        }
+
+        await channel.send({ embeds: [embed] });
+        console.log(`📬 Notified channel ${channelId}: job ${job.id} completed`);
+      } else if (job.status === 'failed') {
+        const embed = new EmbedBuilder()
+          .setTitle('❌ Scheduled Payment Failed')
+          .setDescription(`**@${senderTag}**'s scheduled payment could not be executed.`)
+          .addFields(
+            { name: 'Amount', value: `$${amount}`, inline: true },
+            { name: 'To', value: recipients.map(r => `@${r}`).join(', ') || 'N/A', inline: true },
+            { name: 'Error', value: job.error_message?.substring(0, 200) || 'Unknown error', inline: false },
+          )
+          .setColor(0xFF0000)
+          .setFooter({ text: `Job ID: ${job.id} | Attempts: ${job.attempts}/${job.max_attempts}` });
+
+        await channel.send({ embeds: [embed] });
+        console.log(`📬 Notified channel ${channelId}: job ${job.id} failed`);
+      }
+    }
+  } catch (err) {
+    console.error('❌ Job notification poll error:', err.message);
+  }
+}
+
+setInterval(pollScheduledJobResults, 30000);
+console.log('📡 Scheduled job notification poller started (30s interval)');
+
+// Clean up notified set every 10 min
+setInterval(() => { notifiedJobIds.clear(); }, 10 * 60 * 1000);
 
 setTimeout(() => {
   console.log('\n🔄 90-minute auto-restart...');

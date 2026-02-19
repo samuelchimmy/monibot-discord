@@ -13,8 +13,9 @@
 
 import 'dotenv/config';
 import { Client, GatewayIntentBits, EmbedBuilder, Events } from 'discord.js';
+import { aiParseCommand, aiChat, aiParseSchedule } from './ai.js';
 import express from 'express';
-import { initSupabase, getProfileByDiscordId, getProfileByMonitag, isCommandProcessed, logCommand, updateCommandStatus, logMonibotTransaction, upsertDiscordServer, markServerInactive } from './database.js';
+import { initSupabase, getProfileByDiscordId, getProfileByMonitag, isCommandProcessed, logCommand, updateCommandStatus, logMonibotTransaction, upsertDiscordServer, markServerInactive, createScheduledJob } from './database.js';
 import { parseCommand, getTimeGreeting, getHelpContent } from './commands.js';
 import { executeP2P, executeGrant, getBalance, CHAIN_CONFIGS } from './blockchain.js';
 
@@ -48,8 +49,8 @@ const client = new Client({
 // ============ Initialization ============
 
 console.log('┌─────────────────────────────────────────────────┐');
-console.log('│         MoniBot Discord Bot v1.0                │');
-console.log('│    Multi-Chain Payments + Giveaways             │');
+console.log('│       MoniBot Discord Bot v2.0 (AI-Powered)     │');
+console.log('│    NLP Commands + Conversational AI              │');
 console.log('└─────────────────────────────────────────────────┘\n');
 
 initSupabase();
@@ -91,9 +92,47 @@ client.on(Events.MessageCreate, async (message) => {
   
   if (!content.toLowerCase().startsWith('!monibot') && !content.startsWith(botMention)) return;
 
-  // Parse command
-  const command = parseCommand(content);
-  if (!command) return;
+  // Remove prefix to get the actual message
+  const cleaned = content.replace(/^!monibot\s*/i, '').replace(/<@!\d+>\s*/g, '').replace(/<@\d+>\s*/g, '').trim();
+  if (!cleaned) return;
+
+  // Check for time-aware scheduling first
+  const scheduleResult = await aiParseSchedule(cleaned, 'discord');
+  if (scheduleResult?.hasSchedule && scheduleResult.scheduledAt && scheduleResult.command) {
+    await handleScheduledCommand(message, scheduleResult, cleaned);
+    return;
+  }
+
+  // Try regex parsing first (fast path)
+  let command = parseCommand(content);
+
+  // If regex fails, try AI parsing (smart path)
+  if (!command) {
+    console.log(`[AI] Regex miss, trying NLP for: "${cleaned.substring(0, 80)}"`);
+    const aiResult = await aiParseCommand(cleaned, 'discord');
+    
+    if (aiResult) {
+      if (aiResult.type === 'chat' || aiResult.type === null) {
+        await handleChat(message, cleaned);
+        return;
+      }
+      command = {
+        type: aiResult.type,
+        amount: aiResult.amount,
+        recipients: aiResult.recipients || [],
+        chain: aiResult.chain || 'base',
+        maxParticipants: aiResult.maxParticipants,
+        raw: cleaned,
+      };
+      console.log(`[AI] Resolved to: ${command.type} | $${command.amount} | ${command.recipients?.join(', ') || 'n/a'}`);
+    }
+  }
+
+  // Still nothing? Try conversational AI
+  if (!command) {
+    await handleChat(message, cleaned);
+    return;
+  }
 
   // Deduplication
   const alreadyProcessed = await isCommandProcessed('discord', message.id);
@@ -121,6 +160,8 @@ client.on(Events.MessageCreate, async (message) => {
       case 'giveaway':
         await handleGiveaway(message, command);
         break;
+      default:
+        await handleChat(message, cleaned);
     }
   } catch (error) {
     console.error('❌ Command handler error:', error.message);
@@ -459,7 +500,97 @@ async function handleGiveaway(message, command) {
   });
 }
 
-// ============ Auto-Restart (90 min) ============
+// ============ Scheduled Command Handler ============
+
+async function handleScheduledCommand(message, scheduleResult, originalText) {
+  const senderProfile = await getProfileByDiscordId(message.author.id);
+  if (!senderProfile) {
+    await message.reply('❌ Your Discord is not linked to MoniPay. Use `!monibot link` to connect.');
+    return;
+  }
+
+  const scheduledAt = new Date(scheduleResult.scheduledAt);
+  const now = new Date();
+
+  if (scheduledAt <= now) {
+    await message.reply('⏰ That time is in the past. Please specify a future time.');
+    return;
+  }
+
+  // Parse the underlying command from the schedule result
+  const innerCommand = parseCommand(`!monibot ${scheduleResult.command}`);
+  let aiCommand = null;
+  if (!innerCommand) {
+    const aiResult = await aiParseCommand(scheduleResult.command, 'discord');
+    if (aiResult && aiResult.type && aiResult.type !== 'chat') {
+      aiCommand = aiResult;
+    }
+  }
+
+  const cmd = innerCommand || aiCommand;
+  if (!cmd || !cmd.type || cmd.type === 'help' || cmd.type === 'link' || cmd.type === 'balance') {
+    await message.reply('❌ I can only schedule payment commands (send, giveaway). Try: `!monibot send $5 to @alice tomorrow at 3pm`');
+    return;
+  }
+
+  // Write to scheduled_jobs table
+  const job = await createScheduledJob({
+    type: cmd.type === 'giveaway' ? 'scheduled_giveaway' : 'scheduled_p2p',
+    scheduledAt: scheduledAt.toISOString(),
+    payload: {
+      platform: 'discord',
+      channelId: message.channel.id,
+      guildId: message.guild.id,
+      senderId: senderProfile.id,
+      senderPayTag: senderProfile.pay_tag,
+      senderWallet: senderProfile.wallet_address,
+      command: cmd,
+      originalText,
+    },
+    sourceAuthorId: message.author.id,
+    sourceAuthorUsername: message.author.tag,
+    sourceTweetId: message.id,
+  });
+
+  const timeDesc = scheduleResult.timeDescription || scheduledAt.toUTCString();
+
+  const embed = new EmbedBuilder()
+    .setTitle('⏰ Command Scheduled!')
+    .setDescription(`Your command will execute at **${timeDesc}**`)
+    .addFields(
+      { name: 'Command', value: scheduleResult.command, inline: false },
+      { name: 'Scheduled For', value: `<t:${Math.floor(scheduledAt.getTime() / 1000)}:F>`, inline: true },
+      { name: 'Status', value: job ? '✅ Queued' : '❌ Failed to queue', inline: true },
+    )
+    .setColor(job ? 0x0052FF : 0xFF0000)
+    .setFooter({ text: `Job ID: ${job?.id || 'N/A'}` });
+
+  await message.reply({ embeds: [embed] });
+}
+
+// ============ Conversational AI Handler ============
+
+async function handleChat(message, text) {
+  try {
+    await message.channel.sendTyping();
+    const reply = await aiChat(text, message.author.username, 'discord');
+    
+    if (reply) {
+      const embed = new EmbedBuilder()
+        .setDescription(reply)
+        .setColor(0x0052FF)
+        .setFooter({ text: '🤖 MoniBot AI' });
+      await message.reply({ embeds: [embed] });
+    } else {
+      await message.reply("I'm MoniBot! Try commands like `!monibot send $5 to @alice` or `!monibot help` 💸");
+    }
+  } catch (e) {
+    console.error('[AI] Chat handler error:', e.message);
+    await message.reply("I'm MoniBot! Try `!monibot help` to see what I can do 🤖");
+  }
+}
+
+
 
 setTimeout(() => {
   console.log('\n🔄 90-minute auto-restart...');

@@ -253,3 +253,38 @@ export async function getActiveCampaigns(network = 'base') {
   }
   return data || [];
 }
+
+// ============ Scheduled Jobs ============
+
+/**
+ * Create a scheduled job for deferred command execution
+ */
+export async function createScheduledJob({
+  type,
+  scheduledAt,
+  payload,
+  sourceAuthorId = null,
+  sourceAuthorUsername = null,
+  sourceTweetId = null,
+}) {
+  const { data, error } = await supabase
+    .from('scheduled_jobs')
+    .insert({
+      type,
+      scheduled_at: scheduledAt,
+      payload,
+      status: 'pending',
+      source_author_id: sourceAuthorId,
+      source_author_username: sourceAuthorUsername,
+      source_tweet_id: sourceTweetId,
+    })
+    .select()
+    .maybeSingle();
+
+  if (error) {
+    console.error('❌ Failed to create scheduled job:', error.message);
+    return null;
+  }
+  console.log(`✅ Scheduled job created: ${data.id} for ${scheduledAt}`);
+  return data;
+}

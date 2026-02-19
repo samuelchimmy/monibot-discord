@@ -29,7 +29,7 @@ function appendBuilderCode(calldata) {
 const CHAIN_CONFIGS = {
   base: {
     chain: base,
-    rpc: process.env.BASE_RPC_URL || 'https://mainnet.base.org',
+    rpcs: [process.env.BASE_RPC_URL, 'https://base-rpc.publicnode.com', 'https://base.drpc.org', 'https://mainnet.base.org'].filter(Boolean),
     routerAddress: '0xBEE37c2f3Ce9a48D498FC0D47629a1E10356A516',
     tokenAddress: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
     decimals: 6,
@@ -38,7 +38,7 @@ const CHAIN_CONFIGS = {
   },
   bsc: {
     chain: bsc,
-    rpc: 'https://bsc-dataseed.binance.org',
+    rpcs: ['https://bsc-dataseed.binance.org', 'https://bsc-rpc.publicnode.com', 'https://bsc-dataseed1.defibit.io'],
     routerAddress: '0x9EED16952D734dFC84b7C4e75e9A3228B42D832E',
     tokenAddress: '0x55d398326f99059fF775485246999027B3197955',
     decimals: 18,
@@ -47,7 +47,7 @@ const CHAIN_CONFIGS = {
   },
   tempo: {
     chain: { id: 42431, name: 'Tempo Testnet', nativeCurrency: { name: 'USD', symbol: 'USD', decimals: 18 }, rpcUrls: { default: { http: ['https://rpc.moderato.tempo.xyz'] } } },
-    rpc: process.env.TEMPO_RPC_URL || 'https://rpc.moderato.tempo.xyz',
+    rpcs: [process.env.TEMPO_RPC_URL, 'https://rpc.moderato.tempo.xyz'].filter(Boolean),
     routerAddress: '0x78A824fDE7Ee3E69B2e2Ee52d1136EECD76749fc',
     tokenAddress: '0x20c0000000000000000000000000000000000001',
     decimals: 6,
@@ -67,22 +67,37 @@ const moniBotRouterAbi = [
 
 // ============ Client Factory ============
 
+// Track current RPC index per chain for failover
+const rpcIndexes = { base: 0, bsc: 0, tempo: 0 };
+
 function getClients(chainName) {
   const config = CHAIN_CONFIGS[chainName];
   if (!config) throw new Error(`Unsupported chain: ${chainName}`);
 
+  const rpcIdx = Math.min(rpcIndexes[chainName] || 0, config.rpcs.length - 1);
+  const rpc = config.rpcs[rpcIdx];
+
   const publicClient = createPublicClient({
     chain: config.chain,
-    transport: http(config.rpc, { retryCount: 3, retryDelay: 300 }),
+    transport: http(rpc, { retryCount: 3, retryDelay: 300 }),
   });
 
   const walletClient = createWalletClient({
     account: privateKeyToAccount(process.env.MONIBOT_PRIVATE_KEY),
     chain: config.chain,
-    transport: http(config.rpc, { retryCount: 3, retryDelay: 300 }),
+    transport: http(rpc, { retryCount: 3, retryDelay: 300 }),
   });
 
   return { publicClient, walletClient, config };
+}
+
+function rotateRpc(chainName) {
+  const config = CHAIN_CONFIGS[chainName];
+  if (!config) return;
+  if ((rpcIndexes[chainName] || 0) < config.rpcs.length - 1) {
+    rpcIndexes[chainName] = (rpcIndexes[chainName] || 0) + 1;
+    console.log(`  🔁 RPC failover [${chainName}] → ${config.rpcs[rpcIndexes[chainName]]}`);
+  }
 }
 
 // ============ Core Functions ============
@@ -137,7 +152,10 @@ export async function executeP2P(fromAddress, toAddress, amount, commandId, chai
     gas: gas + gas / 5n,
   });
 
-  await publicClient.waitForTransactionReceipt({ hash });
+  const receipt = await publicClient.waitForTransactionReceipt({ hash });
+  if (receipt.status === 'reverted') {
+    throw new Error(`ERROR_REVERTED:Transaction reverted on-chain (${hash})`);
+  }
   return { hash, fee: feeAmount };
 }
 
@@ -187,7 +205,10 @@ export async function executeGrant(toAddress, amount, campaignId, chainName = 'b
     gas: gas + gas / 5n,
   });
 
-  await publicClient.waitForTransactionReceipt({ hash });
+  const receipt = await publicClient.waitForTransactionReceipt({ hash });
+  if (receipt.status === 'reverted') {
+    throw new Error(`ERROR_REVERTED:Transaction reverted on-chain (${hash})`);
+  }
   return { hash, fee: feeAmount };
 }
 

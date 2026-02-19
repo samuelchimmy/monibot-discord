@@ -22,6 +22,9 @@ const P2P_MULTI = /(?:send|pay)\s+\$?([\d.]+)\s*(?:usdc|usdt|alphausd|αusd)?\s*
 // Giveaway: "giveaway $5 to the first 5 people who drop their monitag"
 const GIVEAWAY = /giveaway\s+\$?([\d.]+)\s*(?:usdc|usdt|alphausd|αusd)?\s*(?:to\s+)?(?:the\s+)?(?:first\s+)?(\d+)\s*(?:people|users|tags|monitags)?/i;
 
+// Drop: "send $1 to the first 5 people who drop their monitag" (giveaway via send command)
+const DROP = /(?:send|pay)\s+\$?([\d.]+)\s*(?:usdc|usdt|alphausd|αusd)?\s*(?:to\s+)?(?:the\s+)?first\s+(\d+)?\s*(?:person|people|users?|tags?|monitags?)?(?:\s+(?:who|to)\s+)?/i;
+
 // Balance check
 const BALANCE = /balance/i;
 
@@ -142,6 +145,18 @@ export function parseCommand(text) {
       type: 'giveaway',
       amount: parseFloat(giveawayMatch[1]),
       maxParticipants: parseInt(giveawayMatch[2]),
+      chain: detectChain(cleaned),
+      raw: cleaned,
+    };
+  }
+
+  // Drop: "send $1 to the first 5 people who drop their monitag"
+  const dropMatch = cleaned.match(DROP);
+  if (dropMatch) {
+    return {
+      type: 'giveaway',
+      amount: parseFloat(dropMatch[1]),
+      maxParticipants: dropMatch[2] ? parseInt(dropMatch[2]) : 1, // default to 1 if "first person" (no number)
       chain: detectChain(cleaned),
       raw: cleaned,
     };
@@ -331,6 +346,6 @@ export function getWelcomeContent() {
         value: 'Type `!monibot setup` for a step-by-step guide to get started, or `!monibot help` to see all commands.',
       },
     ],
-    footer: 'Powered by MoniPay — monipay.xyz',
+    footer: 'Powered by MoniPay — monipay.lovable.app',
   };
 }

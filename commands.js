@@ -16,8 +16,8 @@
 // P2P: "send $5 to @alice" or "pay $5 to @alice"
 const P2P_SINGLE = /(?:send|pay)\s+\$?([\d.]+)\s+(?:usdc|usdt|alphausd|αusd)?\s*(?:to\s+)?@(\w[\w-]*)/i;
 
-// Multi-send: "send $1 each to @alice, @bob, @charlie"
-const P2P_MULTI = /(?:send|pay)\s+\$?([\d.]+)\s*(?:usdc|usdt|alphausd|αusd)?\s*each\s+to\s+((?:@\w[\w-]*(?:\s*,?\s*)?)+)/i;
+// Multi-send: "send $1 each to @alice, @bob, @charlie" or "send $1 each to @alice and @bob"
+const P2P_MULTI = /(?:send|pay)\s+\$?([\d.]+)\s*(?:usdc|usdt|alphausd|αusd)?\s*each\s+to\s+(.*)/i;
 
 // Giveaway: "giveaway $5 to the first 5 people who drop their monitag"
 const GIVEAWAY = /giveaway\s+\$?([\d.]+)\s*(?:usdc|usdt|alphausd|αusd)?\s*(?:to\s+)?(?:the\s+)?(?:first\s+)?(\d+)\s*(?:people|users|tags|monitags)?/i;
@@ -265,6 +265,6 @@ export function getWelcomeContent() {
         value: 'Type `!monibot setup` for a step-by-step guide to get started, or `!monibot help` to see all commands.',
       },
     ],
-    footer: 'Powered by MoniPay — monipay.lovable.app',
+    footer: 'Powered by MoniPay — monipay.xyz',
   };
 }

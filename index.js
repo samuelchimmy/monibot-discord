@@ -13,10 +13,10 @@
 
 import 'dotenv/config';
 import { Client, GatewayIntentBits, EmbedBuilder, Events } from 'discord.js';
-import { aiParseCommand, aiChat, aiParseSchedule } from './ai.js';
+import { aiParseCommand, aiChat, aiParseSchedule, aiTransactionReply } from './ai.js';
 import express from 'express';
 import { initSupabase, getProfileByDiscordId, getProfileByMonitag, isCommandProcessed, logCommand, updateCommandStatus, logMonibotTransaction, upsertDiscordServer, markServerInactive, createScheduledJob } from './database.js';
-import { parseCommand, getTimeGreeting, getHelpContent } from './commands.js';
+import { parseCommand, getTimeGreeting, getHelpContent, getSetupContent, getWelcomeContent } from './commands.js';
 import { executeP2P, executeGrant, getBalance, CHAIN_CONFIGS } from './blockchain.js';
 import { findAlternateChain } from './crossChainCheck.js';
 
@@ -73,6 +73,25 @@ client.once(Events.ClientReady, (c) => {
 client.on(Events.GuildCreate, (guild) => {
   console.log(`📥 Joined server: ${guild.name} (${guild.id})`);
   upsertDiscordServer(guild.id, guild.name, guild.ownerId, guild.memberCount);
+
+  // Send welcome message to the system channel (or first available text channel)
+  const targetChannel = guild.systemChannel || guild.channels.cache.find(
+    ch => ch.type === 0 && ch.permissionsFor(guild.members.me)?.has('SendMessages')
+  );
+
+  if (targetChannel) {
+    const welcomeContent = getWelcomeContent();
+    const embed = new EmbedBuilder()
+      .setTitle(welcomeContent.title)
+      .setDescription(welcomeContent.description)
+      .setColor(0x0052FF)
+      .setFooter({ text: welcomeContent.footer });
+
+    welcomeContent.fields.forEach(f => embed.addFields(f));
+    targetChannel.send({ embeds: [embed] }).catch(err => {
+      console.warn('⚠️ Could not send welcome message:', err.message);
+    });
+  }
 });
 
 client.on(Events.GuildDelete, (guild) => {
@@ -146,6 +165,9 @@ client.on(Events.MessageCreate, async (message) => {
       case 'help':
         await handleHelp(message);
         break;
+      case 'setup':
+        await handleSetup(message);
+        break;
       case 'link':
         await handleLink(message);
         break;
@@ -181,6 +203,18 @@ async function handleHelp(message) {
     .setFooter({ text: helpContent.footer });
 
   helpContent.fields.forEach(f => embed.addFields(f));
+  await message.reply({ embeds: [embed] });
+}
+
+async function handleSetup(message) {
+  const setupContent = getSetupContent();
+  const embed = new EmbedBuilder()
+    .setTitle(setupContent.title)
+    .setDescription(setupContent.description)
+    .setColor(0x0052FF)
+    .setFooter({ text: setupContent.footer });
+
+  setupContent.fields.forEach(f => embed.addFields(f));
   await message.reply({ embeds: [embed] });
 }
 
@@ -295,9 +329,23 @@ async function handleP2P(message, command) {
 
     await updateCommandStatus(cmd?.id, 'completed', hash);
 
+    // Generate AI natural language reply
+    const aiReply = await aiTransactionReply({
+      type: 'p2p_success',
+      amount: netAmount,
+      fee,
+      symbol: chainConfig.symbol,
+      recipient: recipientProfile.pay_tag,
+      sender: senderProfile.pay_tag,
+      chain: activeChain,
+      txHash: hash,
+    });
+
+    const description = aiReply || `Payment of $${netAmount.toFixed(2)} ${chainConfig.symbol} sent to @${recipientProfile.pay_tag}.`;
+
     const embed = new EmbedBuilder()
       .setTitle('✅ Payment Sent!')
-      .setDescription(`${getTimeGreeting()}! Your payment went through.`)
+      .setDescription(description)
       .addFields(
         { name: 'Amount', value: `$${netAmount.toFixed(2)} ${chainConfig.symbol}`, inline: true },
         { name: 'Fee', value: `$${fee.toFixed(4)}`, inline: true },
@@ -345,13 +393,28 @@ async function handleP2P(message, command) {
 
           await updateCommandStatus(cmd?.id, 'completed', hash);
 
+          const aiReply = await aiTransactionReply({
+            type: 'p2p_rerouted',
+            amount: netAmount,
+            fee,
+            symbol: chainConfig.symbol,
+            recipient: recipientProfile.pay_tag,
+            sender: senderProfile.pay_tag,
+            chain: activeChain,
+            originalChain: command.chain,
+            txHash: hash,
+          });
+
+          const description = aiReply || `Smart-routed from ${command.chain} to ${activeChain.toUpperCase()}. $${netAmount.toFixed(2)} ${chainConfig.symbol} delivered to @${recipientProfile.pay_tag}.`;
+
           const embed = new EmbedBuilder()
-            .setTitle('✅ Payment Sent! (Cross-Chain Routed)')
-            .setDescription(`${getTimeGreeting()}! Routed from ${command.chain} → **${activeChain.toUpperCase()}**`)
+            .setTitle('✅ Payment Sent! (Smart Routed)')
+            .setDescription(description)
             .addFields(
               { name: 'Amount', value: `$${netAmount.toFixed(2)} ${chainConfig.symbol}`, inline: true },
               { name: 'Fee', value: `$${fee.toFixed(4)}`, inline: true },
               { name: 'To', value: `@${recipientProfile.pay_tag}`, inline: true },
+              { name: 'Route', value: `${command.chain} → ${activeChain.toUpperCase()}`, inline: true },
               { name: 'TX', value: `\`${hash.substring(0, 18)}...\``, inline: false },
             )
             .setColor(0x00FF00);
@@ -370,9 +433,19 @@ async function handleP2P(message, command) {
 
     await updateCommandStatus(cmd?.id, 'failed', null, error.message.substring(0, 200));
 
-    let errorMsg = '❌ Transaction failed.';
-    if (error.message.includes('ERROR_BALANCE')) errorMsg = '❌ Insufficient balance on all chains.';
-    if (error.message.includes('ERROR_ALLOWANCE')) errorMsg = '❌ Insufficient allowance to MoniBotRouter. Set your allowance at monipay.lovable.app → Settings → MoniBot AI.';
+    let errorMsg = '❌ Something went wrong processing your payment. Please try again.';
+    if (error.message.includes('ERROR_BALANCE')) {
+      const aiErr = await aiTransactionReply({ type: 'error_balance', sender: senderProfile.pay_tag, amount: command.amount });
+      errorMsg = aiErr || 'Your balance is too low on all available chains to complete this payment. Please fund your wallet at monipay.lovable.app.';
+    }
+    if (error.message.includes('ERROR_ALLOWANCE')) {
+      const aiErr = await aiTransactionReply({ type: 'error_allowance', sender: senderProfile.pay_tag, chain: command.chain });
+      errorMsg = aiErr || 'You haven\'t approved MoniBot to spend your tokens yet. Head to monipay.lovable.app → Settings → MoniBot AI to set your allowance.';
+    }
+    if (error.message.includes('ERROR_REVERTED')) {
+      const aiErr = await aiTransactionReply({ type: 'error_reverted', sender: senderProfile.pay_tag, txHash: error.message });
+      errorMsg = aiErr || 'Your transaction was submitted but reverted on-chain. This could be a nonce mismatch, duplicate transaction, or contract issue. Please try again.';
+    }
 
     await processingMsg.edit(errorMsg);
   }

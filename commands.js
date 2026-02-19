@@ -346,6 +346,6 @@ export function getWelcomeContent() {
         value: 'Type `!monibot setup` for a step-by-step guide to get started, or `!monibot help` to see all commands.',
       },
     ],
-    footer: 'Powered by MoniPay — monipay.lovable.app',
+    footer: 'Powered by MoniPay — monipay.xyz',
   };
 }

@@ -58,6 +58,72 @@ function extractMoniTags(text) {
     .filter(m => m !== 'monibot' && m !== 'monipay' && m !== 'everyone' && m !== 'here');
 }
 
+// ============ Schedule Detection via Edge Function ============
+
+/**
+ * Parse time expressions via the parse-schedule edge function.
+ * Falls back to simple regex if edge function is unavailable.
+ * Returns { hasSchedule, scheduledAt, command, timeDescription } or null
+ */
+export async function parseScheduleViaEdge(text, supabase) {
+  try {
+    const { data, error } = await supabase.functions.invoke('parse-schedule', {
+      body: { text, platform: 'discord' },
+    });
+
+    if (error) {
+      console.error('[Schedule] Edge function error:', error.message);
+      return parseSimpleScheduleFallback(text);
+    }
+
+    if (data?.hasSchedule && data.scheduledAt) {
+      return {
+        hasSchedule: true,
+        scheduledAt: data.scheduledAt,
+        command: data.command,
+        timeDescription: data.timeDescription,
+        parsed: data.parsed,
+      };
+    }
+
+    return null;
+  } catch (e) {
+    console.error('[Schedule] Edge function exception:', e.message);
+    return parseSimpleScheduleFallback(text);
+  }
+}
+
+// Inline regex fallback for when edge function is unavailable
+const SIMPLE_SCHEDULE = /\b(?:in\s+(\d+)\s*(s(?:ec(?:ond)?s?)?|m(?:in(?:ute)?s?)?|h(?:(?:ou)?rs?)?|d(?:ays?)?))\s*$/i;
+
+function parseSimpleScheduleFallback(text) {
+  const match = text.match(SIMPLE_SCHEDULE);
+  if (!match) return null;
+  const value = parseInt(match[1]);
+  const unit = match[2].toLowerCase();
+  let ms = 0, unitLabel = '';
+  if (unit.startsWith('s')) { ms = value * 1000; unitLabel = 'second'; }
+  else if (unit.startsWith('m')) { ms = value * 60000; unitLabel = 'minute'; }
+  else if (unit.startsWith('h')) { ms = value * 3600000; unitLabel = 'hour'; }
+  else if (unit.startsWith('d')) { ms = value * 86400000; unitLabel = 'day'; }
+  else return null;
+  if (ms < 30000 || ms > 30 * 86400000) return null;
+  const scheduledAt = new Date(Date.now() + ms);
+  const commandText = text.replace(SIMPLE_SCHEDULE, '').trim();
+  const plural = value !== 1 ? 's' : '';
+  return {
+    hasSchedule: true,
+    scheduledAt: scheduledAt.toISOString(),
+    command: commandText.replace(/^!monibot\s*/i, '').trim(),
+    timeDescription: `in ${value} ${unitLabel}${plural}`,
+  };
+}
+
+// Keep legacy export for backward compat
+export function parseSimpleSchedule(text) {
+  return parseSimpleScheduleFallback(text);
+}
+
 /**
  * Parse a Discord message into a structured command
  * @param {string} text - Message content

@@ -288,3 +288,24 @@ export async function createScheduledJob({
   console.log(`✅ Scheduled job created: ${data.id} for ${scheduledAt}`);
   return data;
 }
+
+/**
+ * Fetch recently completed or failed scheduled jobs for Discord notification.
+ */
+export async function getCompletedScheduledJobs() {
+  const twoMinAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+
+  const { data, error } = await supabase
+    .from('scheduled_jobs')
+    .select('*')
+    .in('status', ['completed', 'failed'])
+    .gte('started_at', twoMinAgo)
+    .order('completed_at', { ascending: false })
+    .limit(20);
+
+  if (error) {
+    console.error('❌ Failed to fetch completed jobs:', error.message);
+    return [];
+  }
+  return (data || []).filter(j => j.payload?.platform === 'discord');
+}

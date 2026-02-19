@@ -79,6 +79,13 @@ client.once(Events.ClientReady, (c) => {
   c.guilds.cache.forEach(guild => {
     upsertDiscordServer(guild.id, guild.name, guild.ownerId, guild.memberCount);
   });
+
+  // Start scheduled job notification poller only after client is ready
+  setInterval(pollScheduledJobResults, 30000);
+  console.log('📡 Scheduled job notification poller started (30s interval)');
+
+  // Clean up notified set every 10 min
+  setInterval(() => { notifiedJobIds.clear(); }, 10 * 60 * 1000);
 });
 
 // ============ Event: Guild Join/Leave ============
@@ -847,11 +854,7 @@ async function pollScheduledJobResults() {
   }
 }
 
-setInterval(pollScheduledJobResults, 30000);
-console.log('📡 Scheduled job notification poller started (30s interval)');
-
-// Clean up notified set every 10 min
-setInterval(() => { notifiedJobIds.clear(); }, 10 * 60 * 1000);
+// Poller started inside ClientReady event handler above
 
 setTimeout(() => {
   console.log('\n🔄 90-minute auto-restart...');

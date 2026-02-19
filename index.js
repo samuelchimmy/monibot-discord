@@ -23,6 +23,19 @@ import { findAlternateChain } from './crossChainCheck.js';
 const PORT = process.env.PORT || 3000;
 const MONIBOT_PROFILE_ID = process.env.MONIBOT_PROFILE_ID || '0cb9ca32-7ef2-4ced-8389-9dbca5156c94';
 
+// ============ Explorer URLs ============
+
+const EXPLORER_URLS = {
+  base: 'https://basescan.org/tx/',
+  bsc: 'https://bscscan.com/tx/',
+  tempo: 'https://explore.tempo.xyz/tx/',
+};
+
+function getExplorerUrl(chain, txHash) {
+  const base = EXPLORER_URLS[chain] || EXPLORER_URLS.base;
+  return `${base}${txHash}`;
+}
+
 // ============ Express Health Check ============
 
 const app = express();
@@ -311,14 +324,14 @@ async function handleP2P(message, command) {
       activeChain
     );
 
-    const netAmount = command.amount - fee;
     const chainConfig = CHAIN_CONFIGS[activeChain];
+    const explorerUrl = getExplorerUrl(activeChain, hash);
 
     // Log to unified ledger
     await logMonibotTransaction({
       senderId: senderProfile.id,
       receiverId: recipientProfile.id,
-      amount: netAmount,
+      amount: command.amount,
       fee,
       txHash: hash,
       type: 'p2p_command',
@@ -332,7 +345,7 @@ async function handleP2P(message, command) {
     // Generate AI natural language reply
     const aiReply = await aiTransactionReply({
       type: 'p2p_success',
-      amount: netAmount,
+      amount: command.amount,
       fee,
       symbol: chainConfig.symbol,
       recipient: recipientProfile.pay_tag,
@@ -341,16 +354,16 @@ async function handleP2P(message, command) {
       txHash: hash,
     });
 
-    const description = aiReply || `Payment of $${netAmount.toFixed(2)} ${chainConfig.symbol} sent to @${recipientProfile.pay_tag}.`;
+    const description = aiReply || `Payment of $${command.amount.toFixed(2)} ${chainConfig.symbol} sent to @${recipientProfile.pay_tag}.`;
 
     const embed = new EmbedBuilder()
       .setTitle('✅ Payment Sent!')
       .setDescription(description)
       .addFields(
-        { name: 'Amount', value: `$${netAmount.toFixed(2)} ${chainConfig.symbol}`, inline: true },
+        { name: 'Amount', value: `$${command.amount.toFixed(2)} ${chainConfig.symbol}`, inline: true },
         { name: 'Fee', value: `$${fee.toFixed(4)}`, inline: true },
         { name: 'To', value: `@${recipientProfile.pay_tag}`, inline: true },
-        { name: 'TX', value: `\`${hash.substring(0, 18)}...\``, inline: false },
+        { name: 'TX', value: `[View on Explorer](${explorerUrl})\n\`${hash}\``, inline: false },
       )
       .setColor(0x00FF00);
 
@@ -376,13 +389,13 @@ async function handleP2P(message, command) {
             activeChain
           );
 
-          const netAmount = command.amount - fee;
           const chainConfig = CHAIN_CONFIGS[activeChain];
+          const explorerUrl = getExplorerUrl(activeChain, hash);
 
           await logMonibotTransaction({
             senderId: senderProfile.id,
             receiverId: recipientProfile.id,
-            amount: netAmount,
+            amount: command.amount,
             fee,
             txHash: hash,
             type: 'p2p_command',
@@ -395,7 +408,7 @@ async function handleP2P(message, command) {
 
           const aiReply = await aiTransactionReply({
             type: 'p2p_rerouted',
-            amount: netAmount,
+            amount: command.amount,
             fee,
             symbol: chainConfig.symbol,
             recipient: recipientProfile.pay_tag,
@@ -405,17 +418,17 @@ async function handleP2P(message, command) {
             txHash: hash,
           });
 
-          const description = aiReply || `Smart-routed from ${command.chain} to ${activeChain.toUpperCase()}. $${netAmount.toFixed(2)} ${chainConfig.symbol} delivered to @${recipientProfile.pay_tag}.`;
+          const description = aiReply || `Smart-routed from ${command.chain} to ${activeChain.toUpperCase()}. $${command.amount.toFixed(2)} ${chainConfig.symbol} delivered to @${recipientProfile.pay_tag}.`;
 
           const embed = new EmbedBuilder()
             .setTitle('✅ Payment Sent! (Smart Routed)')
             .setDescription(description)
             .addFields(
-              { name: 'Amount', value: `$${netAmount.toFixed(2)} ${chainConfig.symbol}`, inline: true },
+              { name: 'Amount', value: `$${command.amount.toFixed(2)} ${chainConfig.symbol}`, inline: true },
               { name: 'Fee', value: `$${fee.toFixed(4)}`, inline: true },
               { name: 'To', value: `@${recipientProfile.pay_tag}`, inline: true },
               { name: 'Route', value: `${command.chain} → ${activeChain.toUpperCase()}`, inline: true },
-              { name: 'TX', value: `\`${hash.substring(0, 18)}...\``, inline: false },
+              { name: 'TX', value: `[View on Explorer](${explorerUrl})\n\`${hash}\``, inline: false },
             )
             .setColor(0x00FF00);
 
@@ -481,7 +494,7 @@ async function handleP2PMulti(message, command) {
       await logMonibotTransaction({
         senderId: senderProfile.id,
         receiverId: recipientProfile.id,
-        amount: command.amount - fee,
+        amount: command.amount,
         fee,
         txHash: hash,
         type: 'p2p_command',
@@ -490,7 +503,7 @@ async function handleP2PMulti(message, command) {
         chain: activeChain.toUpperCase(),
       });
 
-      results.push({ tag, status: 'success', hash });
+      results.push({ tag, status: 'success', hash, chain: activeChain });
     } catch (error) {
       // Cross-chain fallback
       if (error.message.includes('ERROR_BALANCE') || error.message.includes('ERROR_ALLOWANCE')) {
@@ -508,7 +521,7 @@ async function handleP2PMulti(message, command) {
             await logMonibotTransaction({
               senderId: senderProfile.id,
               receiverId: recipientProfile.id,
-              amount: command.amount - fee,
+              amount: command.amount,
               fee,
               txHash: hash,
               type: 'p2p_command',
@@ -517,7 +530,7 @@ async function handleP2PMulti(message, command) {
               chain: alt.chain.toUpperCase(),
             });
 
-            results.push({ tag, status: 'success', hash, rerouted: `${activeChain}→${alt.chain}` });
+            results.push({ tag, status: 'success', hash, rerouted: `${activeChain}→${alt.chain}`, chain: alt.chain });
             continue;
           } catch (retryError) {
             results.push({ tag, status: 'failed', reason: retryError.message.split(':')[0] });
@@ -537,9 +550,10 @@ async function handleP2PMulti(message, command) {
 
   results.forEach(r => {
     const reroute = r.rerouted ? ` _(${r.rerouted})_` : '';
+    const explorer = r.hash ? getExplorerUrl(r.chain || command.chain, r.hash) : '';
     embed.addFields({
       name: `@${r.tag}`,
-      value: r.status === 'success' ? `✅ \`${r.hash.substring(0, 18)}...\`${reroute}` : `❌ ${r.reason}`,
+      value: r.status === 'success' ? `✅ [View TX](${explorer})${reroute}\n\`${r.hash}\`` : `❌ ${r.reason}`,
       inline: true,
     });
   });
@@ -633,7 +647,7 @@ async function handleGiveaway(message, command) {
       await logMonibotTransaction({
         senderId: senderProfile.id,
         receiverId: recipientProfile.id,
-        amount: command.amount - fee,
+        amount: command.amount,
         fee,
         txHash: hash,
         type: 'p2p_command',
@@ -642,7 +656,8 @@ async function handleGiveaway(message, command) {
         chain: command.chain.toUpperCase(),
       });
 
-      await reply.reply(`✅ **$${(command.amount - fee).toFixed(2)}** sent to **@${recipientProfile.pay_tag}**! (${claimedCount}/${command.maxParticipants})`);
+      const explorerUrl = getExplorerUrl(command.chain, hash);
+      await reply.reply(`✅ **$${command.amount.toFixed(2)}** sent to **@${recipientProfile.pay_tag}**! (${claimedCount}/${command.maxParticipants})\n[View TX](${explorerUrl}) | \`${hash}\``);
 
       if (claimedCount >= command.maxParticipants) {
         collector.stop('limit');

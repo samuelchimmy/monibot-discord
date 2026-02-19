@@ -13,10 +13,10 @@
 
 import 'dotenv/config';
 import { Client, GatewayIntentBits, EmbedBuilder, Events } from 'discord.js';
-import { aiParseCommand, aiChat, aiParseSchedule, aiTransactionReply } from './ai.js';
+import { aiParseCommand, aiChat, aiTransactionReply } from './ai.js';
 import express from 'express';
-import { initSupabase, getProfileByDiscordId, getProfileByMonitag, isCommandProcessed, logCommand, updateCommandStatus, logMonibotTransaction, upsertDiscordServer, markServerInactive, createScheduledJob } from './database.js';
-import { parseCommand, getTimeGreeting, getHelpContent, getSetupContent, getWelcomeContent } from './commands.js';
+import { initSupabase, getSupabase, getProfileByDiscordId, getProfileByMonitag, isCommandProcessed, logCommand, updateCommandStatus, logMonibotTransaction, upsertDiscordServer, markServerInactive, createScheduledJob } from './database.js';
+import { parseCommand, parseScheduleViaEdge, getTimeGreeting, getHelpContent, getSetupContent, getWelcomeContent } from './commands.js';
 import { executeP2P, executeGrant, getBalance, CHAIN_CONFIGS } from './blockchain.js';
 import { findAlternateChain } from './crossChainCheck.js';
 
@@ -129,8 +129,8 @@ client.on(Events.MessageCreate, async (message) => {
   const cleaned = content.replace(/^!monibot\s*/i, '').replace(/<@!\d+>\s*/g, '').replace(/<@\d+>\s*/g, '').trim();
   if (!cleaned) return;
 
-  // Check for time-aware scheduling first
-  const scheduleResult = await aiParseSchedule(cleaned, 'discord');
+  // Check for time-aware scheduling via edge function (supports complex expressions)
+  const scheduleResult = await parseScheduleViaEdge(content, getSupabase());
   if (scheduleResult?.hasSchedule && scheduleResult.scheduledAt && scheduleResult.command) {
     await handleScheduledCommand(message, scheduleResult, cleaned);
     return;

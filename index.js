@@ -18,6 +18,7 @@ import express from 'express';
 import { initSupabase, getProfileByDiscordId, getProfileByMonitag, isCommandProcessed, logCommand, updateCommandStatus, logMonibotTransaction, upsertDiscordServer, markServerInactive, createScheduledJob } from './database.js';
 import { parseCommand, getTimeGreeting, getHelpContent } from './commands.js';
 import { executeP2P, executeGrant, getBalance, CHAIN_CONFIGS } from './blockchain.js';
+import { findAlternateChain } from './crossChainCheck.js';
 
 const PORT = process.env.PORT || 3000;
 const MONIBOT_PROFILE_ID = process.env.MONIBOT_PROFILE_ID || '0cb9ca32-7ef2-4ced-8389-9dbca5156c94';
@@ -265,17 +266,19 @@ async function handleP2P(message, command) {
 
   const processingMsg = await message.reply(`⏳ Sending **$${command.amount}** to **@${recipientTag}** on ${command.chain}...`);
 
+  let activeChain = command.chain;
+
   try {
     const { hash, fee } = await executeP2P(
       senderProfile.wallet_address,
       recipientProfile.wallet_address,
       command.amount,
       cmd?.id || message.id,
-      command.chain
+      activeChain
     );
 
     const netAmount = command.amount - fee;
-    const chainConfig = CHAIN_CONFIGS[command.chain];
+    const chainConfig = CHAIN_CONFIGS[activeChain];
 
     // Log to unified ledger
     await logMonibotTransaction({
@@ -287,7 +290,7 @@ async function handleP2P(message, command) {
       type: 'p2p_command',
       payerPayTag: senderProfile.pay_tag,
       recipientPayTag: recipientProfile.pay_tag,
-      chain: command.chain.toUpperCase(),
+      chain: activeChain.toUpperCase(),
     });
 
     await updateCommandStatus(cmd?.id, 'completed', hash);
@@ -306,10 +309,69 @@ async function handleP2P(message, command) {
     await processingMsg.edit({ content: null, embeds: [embed] });
   } catch (error) {
     console.error('❌ P2P execution error:', error.message);
+
+    // Cross-chain fallback: if balance or allowance error, check other chains
+    if (error.message.includes('ERROR_BALANCE') || error.message.includes('ERROR_ALLOWANCE')) {
+      const alt = await findAlternateChain(senderProfile.wallet_address, command.amount, activeChain);
+
+      if (alt && !alt.needsAllowance) {
+        // Auto-reroute to alternate chain
+        await processingMsg.edit(`🔄 Insufficient funds on ${activeChain}. Rerouting to **${alt.chain.toUpperCase()}** (${alt.balance.toFixed(2)} ${alt.symbol})...`);
+        activeChain = alt.chain;
+
+        try {
+          const { hash, fee } = await executeP2P(
+            senderProfile.wallet_address,
+            recipientProfile.wallet_address,
+            command.amount,
+            cmd?.id || message.id,
+            activeChain
+          );
+
+          const netAmount = command.amount - fee;
+          const chainConfig = CHAIN_CONFIGS[activeChain];
+
+          await logMonibotTransaction({
+            senderId: senderProfile.id,
+            receiverId: recipientProfile.id,
+            amount: netAmount,
+            fee,
+            txHash: hash,
+            type: 'p2p_command',
+            payerPayTag: senderProfile.pay_tag,
+            recipientPayTag: recipientProfile.pay_tag,
+            chain: activeChain.toUpperCase(),
+          });
+
+          await updateCommandStatus(cmd?.id, 'completed', hash);
+
+          const embed = new EmbedBuilder()
+            .setTitle('✅ Payment Sent! (Cross-Chain Routed)')
+            .setDescription(`${getTimeGreeting()}! Routed from ${command.chain} → **${activeChain.toUpperCase()}**`)
+            .addFields(
+              { name: 'Amount', value: `$${netAmount.toFixed(2)} ${chainConfig.symbol}`, inline: true },
+              { name: 'Fee', value: `$${fee.toFixed(4)}`, inline: true },
+              { name: 'To', value: `@${recipientProfile.pay_tag}`, inline: true },
+              { name: 'TX', value: `\`${hash.substring(0, 18)}...\``, inline: false },
+            )
+            .setColor(0x00FF00);
+
+          await processingMsg.edit({ content: null, embeds: [embed] });
+          return;
+        } catch (retryError) {
+          console.error('❌ Cross-chain retry also failed:', retryError.message);
+        }
+      } else if (alt && alt.needsAllowance) {
+        await updateCommandStatus(cmd?.id, 'failed', null, `Funds on ${alt.chain} but no allowance`);
+        await processingMsg.edit(`❌ Insufficient funds on ${command.chain}. You have **${alt.balance.toFixed(2)} ${alt.symbol}** on ${alt.chain.toUpperCase()} but need to set your allowance first at monipay.lovable.app → Settings → MoniBot AI.`);
+        return;
+      }
+    }
+
     await updateCommandStatus(cmd?.id, 'failed', null, error.message.substring(0, 200));
 
     let errorMsg = '❌ Transaction failed.';
-    if (error.message.includes('ERROR_BALANCE')) errorMsg = '❌ Insufficient balance.';
+    if (error.message.includes('ERROR_BALANCE')) errorMsg = '❌ Insufficient balance on all chains.';
     if (error.message.includes('ERROR_ALLOWANCE')) errorMsg = '❌ Insufficient allowance to MoniBotRouter. Set your allowance at monipay.lovable.app → Settings → MoniBot AI.';
 
     await processingMsg.edit(errorMsg);
@@ -333,13 +395,14 @@ async function handleP2PMulti(message, command) {
       continue;
     }
 
+    let activeChain = command.chain;
     try {
       const { hash, fee } = await executeP2P(
         senderProfile.wallet_address,
         recipientProfile.wallet_address,
         command.amount,
         `${message.id}_${tag}`,
-        command.chain
+        activeChain
       );
 
       await logMonibotTransaction({
@@ -351,11 +414,44 @@ async function handleP2PMulti(message, command) {
         type: 'p2p_command',
         payerPayTag: senderProfile.pay_tag,
         recipientPayTag: recipientProfile.pay_tag,
-        chain: command.chain.toUpperCase(),
+        chain: activeChain.toUpperCase(),
       });
 
       results.push({ tag, status: 'success', hash });
     } catch (error) {
+      // Cross-chain fallback
+      if (error.message.includes('ERROR_BALANCE') || error.message.includes('ERROR_ALLOWANCE')) {
+        const alt = await findAlternateChain(senderProfile.wallet_address, command.amount, activeChain);
+        if (alt && !alt.needsAllowance) {
+          try {
+            const { hash, fee } = await executeP2P(
+              senderProfile.wallet_address,
+              recipientProfile.wallet_address,
+              command.amount,
+              `${message.id}_${tag}`,
+              alt.chain
+            );
+
+            await logMonibotTransaction({
+              senderId: senderProfile.id,
+              receiverId: recipientProfile.id,
+              amount: command.amount - fee,
+              fee,
+              txHash: hash,
+              type: 'p2p_command',
+              payerPayTag: senderProfile.pay_tag,
+              recipientPayTag: recipientProfile.pay_tag,
+              chain: alt.chain.toUpperCase(),
+            });
+
+            results.push({ tag, status: 'success', hash, rerouted: `${activeChain}→${alt.chain}` });
+            continue;
+          } catch (retryError) {
+            results.push({ tag, status: 'failed', reason: retryError.message.split(':')[0] });
+            continue;
+          }
+        }
+      }
       results.push({ tag, status: 'failed', reason: error.message.split(':')[0] });
     }
   }
@@ -367,9 +463,10 @@ async function handleP2PMulti(message, command) {
     .setColor(successCount === results.length ? 0x00FF00 : 0xFFA500);
 
   results.forEach(r => {
+    const reroute = r.rerouted ? ` _(${r.rerouted})_` : '';
     embed.addFields({
       name: `@${r.tag}`,
-      value: r.status === 'success' ? `✅ \`${r.hash.substring(0, 18)}...\`` : `❌ ${r.reason}`,
+      value: r.status === 'success' ? `✅ \`${r.hash.substring(0, 18)}...\`${reroute}` : `❌ ${r.reason}`,
       inline: true,
     });
   });

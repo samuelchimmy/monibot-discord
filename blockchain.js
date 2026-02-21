@@ -30,8 +30,8 @@ const CHAIN_CONFIGS = {
   base: {
     chain: base,
     rpcs: [process.env.BASE_RPC_URL, 'https://base-rpc.publicnode.com', 'https://base.drpc.org', 'https://mainnet.base.org'].filter(Boolean),
-    routerAddress: '0xBEE37c2f3Ce9a48D498FC0D47629a1E10356A516',
-    tokenAddress: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+    routerAddress: '0xbee37c2f3ce9a48d498fc0d47629a1e10356a516',
+    tokenAddress: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
     decimals: 6,
     symbol: 'USDC',
     useBuilderCode: true,
@@ -39,8 +39,8 @@ const CHAIN_CONFIGS = {
   bsc: {
     chain: bsc,
     rpcs: ['https://bsc-dataseed.binance.org', 'https://bsc-rpc.publicnode.com', 'https://bsc-dataseed1.defibit.io'],
-    routerAddress: '0x9EED16952D734dFC84b7C4e75e9A3228B42D832E',
-    tokenAddress: '0x55d398326f99059fF775485246999027B3197955',
+    routerAddress: '0x9eed16952d734dfc84b7c4e75e9a3228b42d832e',
+    tokenAddress: '0x55d398326f99059ff775485246999027b3197955',
     decimals: 18,
     symbol: 'USDT',
     useBuilderCode: false,
@@ -48,7 +48,7 @@ const CHAIN_CONFIGS = {
   tempo: {
     chain: { id: 42431, name: 'Tempo Testnet', nativeCurrency: { name: 'USD', symbol: 'USD', decimals: 18 }, rpcUrls: { default: { http: ['https://rpc.moderato.tempo.xyz'] } } },
     rpcs: [process.env.TEMPO_RPC_URL, 'https://rpc.moderato.tempo.xyz'].filter(Boolean),
-    routerAddress: '0x78A824fDE7Ee3E69B2e2Ee52d1136EECD76749fc',
+    routerAddress: '0x78a824fde7ee3e69b2e2ee52d1136eecd76749fc',
     tokenAddress: '0x20c0000000000000000000000000000000000001',
     decimals: 6,
     symbol: 'αUSD',

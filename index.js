@@ -179,30 +179,16 @@ async function sendWelcomeMessage(guild) {
     .setTitle('Thanks for adding MoniBot!')
     .setDescription(
       [
-        '# MoniPay',
-        'MoniPay is redefining commerce with **agentic technology**, where AI agents, social platforms, and blockchain converge to create **frictionless, gasless payments for everyone**.',
-        '',
         '## Meet MoniBot',
-        '**`MoniBot`** is our autonomous AI agent that transforms Discord into a payment-enabled platform.',
-        '',
-        'It:',
-        '- 🧠 Processes natural language commands',
-        '- 🔍 Validates transactions with Gemini AI',
-        '- ⚡ Executes atomic on-chain settlements (Base / BSC / Tempo)',
-        '- ⏱ Confirms transactions within 30 seconds',
-        '',
-        'No wallet pop-ups.',
-        'No approvals.',
-        'No Wallet Addresses.',
-        'No visible blockchain complexity.',
+        '**`MoniBot`** is Monipay's autonomous AI agent that transforms Discord into a payment-enabled platform.',
         '',
         '## Activate in 60 Seconds',
         '- Visit **[monipay.xyz](https://monipay.xyz)**',
         '- Create your MoniTag',
-        '- Fund your monipay wallet via Cross-Chain Deposit in Base or BSC or direct stablecoin transfer into your monipay account (USDC on BASE & USDT on BSC)',
+        '- Fund your monipay wallet via Cross-Chain Deposit into Base or BSC or direct stablecoin transfer into your monipay account (USDC on BASE & USDT on BSC)',
         '- Goto Settings - MoniBot AI & Automation',
         '- Link your discord account',
-        '- Approval spending amount for the bot',
+        '- Approve spending amount for the bot',
         '- Congratulations you are all set to send natural language commands on discord.',
         '',
         '## Example Commands',
@@ -216,7 +202,6 @@ async function sendWelcomeMessage(guild) {
         '\u001b[1;34m!\u001b[0m\u001b[1;36mmonibot\u001b[0m \u001b[1;33mhelp\u001b[0m',
         '```',
         '',
-        '**Powered by MoniPay •** [monipay.xyz](https://monipay.xyz)',
       ].join('\n')
     )
     .setColor(0x0066FF)

@@ -260,7 +260,7 @@ export function getHelpContent() {
         value: 'Add `usdt` for BSC, `on tempo` for Tempo.\nDefault: USDC on Base.',
       },
     ],
-    footer: 'monipay.lovable.app',
+    footer: 'monipay.xyz',
   };
 }
 
@@ -275,7 +275,7 @@ export function getSetupContent() {
       {
         name: '━━━━ Step 1: Create Your MoniPay Account ━━━━',
         value: [
-          '1. Go to **[monipay.lovable.app](https://monipay.lovable.app)**',
+          '1. Go to **[monipay.xyz](https://monipay.xyz)**',
           '2. Choose a unique **MoniTag** (your payment username)',
           '3. Set a **4-digit PIN** to secure your wallet',
           '4. Your wallet is created automatically, no seed phrase needed',
@@ -319,7 +319,7 @@ export function getSetupContent() {
         ].join('\n'),
       },
     ],
-    footer: 'Need help? Visit monipay.lovable.app/support',
+    footer: 'Need help? Visit monipay.xyz/support',
   };
 }
 

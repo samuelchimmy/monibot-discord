@@ -290,6 +290,24 @@ export async function createScheduledJob({
 }
 
 /**
+ * Get pending scheduled jobs ready for execution
+ */
+export async function getPendingScheduledJobs() {
+  const now = new Date().toISOString();
+  const { data, error } = await supabase
+    .from('scheduled_jobs')
+    .select('*')
+    .eq('status', 'pending')
+    .lte('scheduled_at', now);
+
+  if (error) {
+    console.error('❌ Failed to fetch pending scheduled jobs:', error.message);
+    return [];
+  }
+  return data || [];
+}
+
+/**
  * Fetch recently completed or failed scheduled jobs for Discord notification.
  */
 export async function getCompletedScheduledJobs() {

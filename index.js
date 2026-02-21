@@ -180,7 +180,7 @@ async function sendWelcomeMessage(guild) {
     .setDescription(
       [
         '## Meet MoniBot',
-        '**`MoniBot`** is Monipay's autonomous AI agent that transforms Discord into a payment-enabled platform.',
+        '**`MoniBot`** is Monipay''s autonomous AI agent that transforms Discord into a payment-enabled platform.',
         '',
         '## Activate in 60 Seconds',
         '- Visit **[monipay.xyz](https://monipay.xyz)**',

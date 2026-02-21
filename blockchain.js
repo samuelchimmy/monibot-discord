@@ -226,4 +226,18 @@ export async function getBalance(address, chainName = 'base') {
   return { balance: parseFloat(formatUnits(balance, config.decimals)), symbol: config.symbol };
 }
 
+/**
+ * Get the user's current approved spending amount for the Router
+ */
+export async function getAllowance(address, chainName = 'base') {
+  const { publicClient, config } = getClients(chainName);
+  const allowance = await publicClient.readContract({
+    address: config.tokenAddress,
+    abi: erc20Abi,
+    functionName: 'allowance',
+    args: [address, config.routerAddress],
+  });
+  return parseFloat(formatUnits(allowance, config.decimals));
+}
+
 export { CHAIN_CONFIGS };

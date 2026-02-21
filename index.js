@@ -677,6 +677,13 @@ async function handleGiveaway(message, command) {
       if (error.message.includes('ERROR_BALANCE')) {
         await reply.reply('❌ Giveaway ended — sender ran out of funds.');
         collector.stop('funds');
+      } else if (error.message.includes('ERROR_ALLOWANCE')) {
+        await reply.reply('❌ Giveaway paused — sender needs to set allowance at monipay.lovable.app → Settings → MoniBot AI.');
+        collector.stop('allowance');
+      } else if (error.message.includes('rate limit') || error.message.includes('429')) {
+        await reply.reply('⏳ Network is busy — please try claiming again in a moment.');
+      } else {
+        await reply.reply('❌ Transfer failed — please try again.');
       }
     }
   });
@@ -856,10 +863,7 @@ async function pollScheduledJobResults() {
 
 // Poller started inside ClientReady event handler above
 
-setTimeout(() => {
-  console.log('\n🔄 90-minute auto-restart...');
-  process.exit(0);
-}, 90 * 60 * 1000);
+// Auto-restart removed — Railway handles container restarts via restart policy
 
 // ============ Graceful Shutdown ============
 

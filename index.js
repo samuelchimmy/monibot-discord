@@ -1,6 +1,6 @@
 /**
  * MoniBot Discord Bot v1.0
- * 
+ *
  * Features:
  * - P2P payments via !monibot send $X to @tag
  * - Multi-send via !monibot send $X each to @a, @b, @c
@@ -9,16 +9,22 @@
  * - Time-aware greetings
  * - Multi-chain support (Base, BSC, Tempo)
  * - Guild tracking for analytics
+ * - Automatic welcome message on server join/restart
  */
 
 import 'dotenv/config';
-import { Client, GatewayIntentBits, EmbedBuilder, Events } from 'discord.js';
+import { Client, GatewayIntentBits, EmbedBuilder, Events, AttachmentBuilder, PermissionsBitField } from 'discord.js';
 import { aiParseCommand, aiChat, aiTransactionReply } from './ai.js';
 import express from 'express';
 import { initSupabase, getSupabase, getProfileByDiscordId, getProfileByMonitag, isCommandProcessed, logCommand, updateCommandStatus, logMonibotTransaction, upsertDiscordServer, markServerInactive, createScheduledJob, getCompletedScheduledJobs } from './database.js';
 import { parseCommand, parseScheduleViaEdge, getTimeGreeting, getHelpContent, getSetupContent, getWelcomeContent } from './commands.js';
 import { executeP2P, executeGrant, getBalance, CHAIN_CONFIGS } from './blockchain.js';
 import { findAlternateChain } from './crossChainCheck.js';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const PORT = process.env.PORT || 3000;
 const MONIBOT_PROFILE_ID = process.env.MONIBOT_PROFILE_ID || '0cb9ca32-7ef2-4ced-8389-9dbca5156c94';
@@ -69,16 +75,189 @@ console.log('└─────────────────────�
 
 initSupabase();
 
+// ============ Welcome Message Helper ============
+
+/**
+ * Builds and sends the MoniBot welcome embed to the most appropriate channel in a guild.
+ * Priority: systemChannel → #general/#welcome/#announcements → first writable text channel → DM to owner.
+ * Always sends on bot restart (per product spec).
+ *
+ * @param {import('discord.js').Guild} guild
+ */
+async function sendWelcomeMessage(guild) {
+  // ── Build the banner attachment ──────────────────────────────────────────
+  const bannerPath = path.join(__dirname, 'assets', 'monibot_discord.png');
+  let attachment = null;
+  try {
+    attachment = new AttachmentBuilder(bannerPath, { name: 'monibot_discord.png' });
+  } catch (err) {
+    console.warn(`⚠️ [Welcome] Could not load banner image: ${err.message}`);
+  }
+
+  // ── Build the embed ──────────────────────────────────────────────────────
+  const welcomeEmbed = new EmbedBuilder()
+    .setTitle('Thanks for adding MoniBot!')
+    .setDescription(
+      [
+        '# MoniPay',
+        'MoniPay is redefining commerce with **agentic technology**, where AI agents, social platforms, and blockchain converge to create **frictionless, gasless payments for everyone**.',
+        '',
+        '## Meet MoniBot',
+        '**`MoniBot`** is our autonomous AI agent that transforms Discord into a payment-enabled platform.',
+        '',
+        'It:',
+        '- 🧠 Processes natural language commands',
+        '- 🔍 Validates transactions with Gemini AI',
+        '- ⚡ Executes atomic on-chain settlements (Base / BSC / Tempo)',
+        '- ⏱ Confirms transactions within 30 seconds',
+        '',
+        'No wallet pop-ups.',
+        'No approvals.',
+        'No Wallet Addresses.',
+        'No visible blockchain complexity.',
+        '',
+        '## Activate in 60 Seconds',
+        '- Visit **monipay.xyz**',
+        '- Create your MoniTag',
+        '- Fund your monipay wallet via Cross-Chain Deposit in Base or BSC or direct stablecoin transfer into your monipay account (USDC on BASE & USDT on BSC)',
+        '- Goto Settings - MoniBot AI & Automation',
+        '- Link your discord account',
+        '- Approval spending amount for the bot',
+        '- Congratulations you are all set to send natural language commands on discord.',
+        '',
+        '## Example Commands',
+        // Terminal-style coloured code block — Discord only supports plain ```bash
+        // We use ANSI escape codes inside an ansi code fence for terminal colour.
+        '```ansi',
+        '\u001b[1;34m!\u001b[0m\u001b[1;36mmonibot\u001b[0m \u001b[1;33msend\u001b[0m \u001b[1;32m$50\u001b[0m \u001b[1;37mto\u001b[0m \u001b[1;35m@Jesse\u001b[0m',
+        '\u001b[1;34m!\u001b[0m\u001b[1;36mmonibot\u001b[0m \u001b[1;33msend\u001b[0m \u001b[1;32m$50\u001b[0m \u001b[1;37mto the first person to drop their monitag below\u001b[0m',
+        '\u001b[1;34m!\u001b[0m\u001b[1;36mmonibot\u001b[0m \u001b[1;33msend\u001b[0m \u001b[1;32m$50\u001b[0m \u001b[1;37meach to\u001b[0m \u001b[1;35m@Jesse\u001b[0m \u001b[1;37m&\u001b[0m \u001b[1;35m@jade\u001b[0m',
+        '\u001b[1;34m!\u001b[0m\u001b[1;36mmonibot\u001b[0m \u001b[1;33msend\u001b[0m \u001b[1;32m$5\u001b[0m \u001b[1;37mto\u001b[0m \u001b[1;35m@Jesse\u001b[0m \u001b[1;37min\u001b[0m \u001b[1;31m5mins\u001b[0m',
+        '\u001b[1;34m!\u001b[0m\u001b[1;36mmonibot\u001b[0m \u001b[1;33mbalance\u001b[0m',
+        '\u001b[1;34m!\u001b[0m\u001b[1;36mmonibot\u001b[0m \u001b[1;33mhelp\u001b[0m',
+        '```',
+      ].join('\n')
+    )
+    .setColor(0x0066FF)
+    .setFooter({ text: 'Powered by MoniPay • monipay.xyz' });
+
+  // Attach the banner image if it loaded successfully
+  if (attachment) {
+    welcomeEmbed.setImage('attachment://monibot_discord.png');
+  }
+
+  const messagePayload = attachment
+    ? { embeds: [welcomeEmbed], files: [attachment] }
+    : { embeds: [welcomeEmbed] };
+
+  // ── Required permissions ─────────────────────────────────────────────────
+  const REQUIRED_PERMS = [
+    PermissionsBitField.Flags.ViewChannel,
+    PermissionsBitField.Flags.SendMessages,
+    PermissionsBitField.Flags.EmbedLinks,
+  ];
+
+  /**
+   * Returns true if the bot has all required permissions in the given channel.
+   * @param {import('discord.js').GuildChannel} ch
+   */
+  function botCanPost(ch) {
+    if (ch.type !== 0) return false; // text channels only
+    const perms = ch.permissionsFor(guild.members.me);
+    if (!perms) return false;
+    return REQUIRED_PERMS.every(p => perms.has(p));
+  }
+
+  // ── Channel selection (priority order) ───────────────────────────────────
+
+  // 1. System channel
+  let targetChannel = null;
+  if (guild.systemChannel && botCanPost(guild.systemChannel)) {
+    targetChannel = guild.systemChannel;
+    console.log(`[Welcome] Using system channel: #${guild.systemChannel.name}`);
+  }
+
+  // 2. Named fallback channels
+  if (!targetChannel) {
+    const preferredNames = ['general', 'welcome', 'announcements'];
+    for (const name of preferredNames) {
+      const found = guild.channels.cache.find(
+        ch => ch.type === 0 && ch.name.toLowerCase().includes(name) && botCanPost(ch)
+      );
+      if (found) {
+        targetChannel = found;
+        console.log(`[Welcome] Using named fallback channel: #${found.name}`);
+        break;
+      }
+    }
+  }
+
+  // 3. First writable text channel
+  if (!targetChannel) {
+    const firstAvailable = guild.channels.cache
+      .filter(ch => botCanPost(ch))
+      .sort((a, b) => a.rawPosition - b.rawPosition)
+      .first();
+    if (firstAvailable) {
+      targetChannel = firstAvailable;
+      console.log(`[Welcome] Using first available text channel: #${firstAvailable.name}`);
+    }
+  }
+
+  // 4. Send to channel if found
+  if (targetChannel) {
+    try {
+      await targetChannel.send(messagePayload);
+      console.log(`✅ [Welcome] Message sent to #${targetChannel.name} in "${guild.name}" (${guild.id})`);
+      return;
+    } catch (err) {
+      console.error(`❌ [Welcome] Failed to send to #${targetChannel.name}: ${err.message}`);
+      // Fall through to DM the owner
+    }
+  }
+
+  // 5. Last resort — DM the server owner
+  console.warn(`⚠️ [Welcome] No accessible channel found in "${guild.name}". DMing owner...`);
+  try {
+    const owner = await guild.fetchOwner();
+    const ownerEmbed = new EmbedBuilder()
+      .setTitle('Thanks for adding MoniBot!')
+      .setDescription(
+        "**Heads up:** I couldn't find a channel to post in on your server. Please give MoniBot permission to send messages in at least one channel so I can greet your community!\n\n" +
+        welcomeEmbed.data.description
+      )
+      .setColor(0x0066FF)
+      .setFooter({ text: 'Powered by MoniPay • monipay.xyz' });
+
+    const ownerPayload = attachment
+      ? { embeds: [ownerEmbed], files: [attachment] }
+      : { embeds: [ownerEmbed] };
+
+    await owner.send(ownerPayload);
+    console.log(`✅ [Welcome] DM sent to server owner: ${owner.user.tag}`);
+  } catch (dmErr) {
+    console.error(`❌ [Welcome] Could not DM server owner either: ${dmErr.message}`);
+  }
+}
+
 // ============ Event: Ready ============
 
-client.once(Events.ClientReady, (c) => {
+client.once(Events.ClientReady, async (c) => {
   console.log(`✅ Logged in as ${c.user.tag}`);
   console.log(`📡 Connected to ${c.guilds.cache.size} server(s)`);
 
-  // Track all guilds
-  c.guilds.cache.forEach(guild => {
+  // Track all guilds and send welcome on every restart (per spec)
+  for (const guild of c.guilds.cache.values()) {
     upsertDiscordServer(guild.id, guild.name, guild.ownerId, guild.memberCount);
-  });
+
+    // Fetch full guild data (needed for systemChannel, members.me, etc.)
+    try {
+      const fullGuild = await guild.fetch();
+      await sendWelcomeMessage(fullGuild);
+    } catch (err) {
+      console.error(`❌ [Welcome/Restart] Error for guild "${guild.name}": ${err.message}`);
+    }
+  }
 
   // Start scheduled job notification poller only after client is ready
   setInterval(pollScheduledJobResults, 30000);
@@ -90,27 +269,16 @@ client.once(Events.ClientReady, (c) => {
 
 // ============ Event: Guild Join/Leave ============
 
-client.on(Events.GuildCreate, (guild) => {
+client.on(Events.GuildCreate, async (guild) => {
   console.log(`📥 Joined server: ${guild.name} (${guild.id})`);
   upsertDiscordServer(guild.id, guild.name, guild.ownerId, guild.memberCount);
 
-  // Send welcome message to the system channel (or first available text channel)
-  const targetChannel = guild.systemChannel || guild.channels.cache.find(
-    ch => ch.type === 0 && ch.permissionsFor(guild.members.me)?.has('SendMessages')
-  );
-
-  if (targetChannel) {
-    const welcomeContent = getWelcomeContent();
-    const embed = new EmbedBuilder()
-      .setTitle(welcomeContent.title)
-      .setDescription(welcomeContent.description)
-      .setColor(0x0052FF)
-      .setFooter({ text: welcomeContent.footer });
-
-    welcomeContent.fields.forEach(f => embed.addFields(f));
-    targetChannel.send({ embeds: [embed] }).catch(err => {
-      console.warn('⚠️ Could not send welcome message:', err.message);
-    });
+  // Send welcome message (covers both first-join and rejoin)
+  try {
+    const fullGuild = await guild.fetch();
+    await sendWelcomeMessage(fullGuild);
+  } catch (err) {
+    console.error(`❌ [Welcome/GuildCreate] Error for guild "${guild.name}": ${err.message}`);
   }
 });
 
@@ -129,7 +297,7 @@ client.on(Events.MessageCreate, async (message) => {
   // Check for !monibot prefix or @mention
   const content = message.content.trim();
   const botMention = `<@${client.user.id}>`;
-  
+
   if (!content.toLowerCase().startsWith('!monibot') && !content.startsWith(botMention)) return;
 
   // Remove prefix to get the actual message
@@ -150,7 +318,7 @@ client.on(Events.MessageCreate, async (message) => {
   if (!command) {
     console.log(`[AI] Regex miss, trying NLP for: "${cleaned.substring(0, 80)}"`);
     const aiResult = await aiParseCommand(cleaned, 'discord');
-    
+
     if (aiResult) {
       if (aiResult.type === 'chat' || aiResult.type === null) {
         await handleChat(message, cleaned);
@@ -773,7 +941,7 @@ async function handleChat(message, text) {
   try {
     await message.channel.sendTyping();
     const reply = await aiChat(text, message.author.username, 'discord');
-    
+
     if (reply) {
       const embed = new EmbedBuilder()
         .setDescription(reply)
@@ -788,8 +956,6 @@ async function handleChat(message, text) {
     await message.reply("I'm MoniBot! Try `!monibot help` to see what I can do 🤖");
   }
 }
-
-
 
 // ============ Scheduled Job Notification Poller ============
 

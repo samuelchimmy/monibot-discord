@@ -1,5 +1,5 @@
 /**
- * MoniBot Discord Bot v1.0
+ * MoniBot Discord Bot v2.0
  *
  * Features:
  * - P2P payments via !monibot send $X to @tag
@@ -10,15 +10,18 @@
  * - Multi-chain support (Base, BSC, Tempo)
  * - Guild tracking for analytics
  * - Automatic welcome message on server join/restart
+ * - Scheduled job recovery notifications on restart
+ * - Allowance sanity check before every payment
+ * - Per-user rate limiting (max 5 commands/minute)
  */
 
 import 'dotenv/config';
 import { Client, GatewayIntentBits, EmbedBuilder, Events, AttachmentBuilder, PermissionsBitField } from 'discord.js';
 import { aiParseCommand, aiChat, aiTransactionReply } from './ai.js';
 import express from 'express';
-import { initSupabase, getSupabase, getProfileByDiscordId, getProfileByMonitag, isCommandProcessed, logCommand, updateCommandStatus, logMonibotTransaction, upsertDiscordServer, markServerInactive, createScheduledJob, getCompletedScheduledJobs } from './database.js';
+import { initSupabase, getSupabase, getProfileByDiscordId, getProfileByMonitag, isCommandProcessed, logCommand, updateCommandStatus, logMonibotTransaction, upsertDiscordServer, markServerInactive, createScheduledJob, getCompletedScheduledJobs, getPendingScheduledJobs } from './database.js';
 import { parseCommand, parseScheduleViaEdge, getTimeGreeting, getHelpContent, getSetupContent, getWelcomeContent } from './commands.js';
-import { executeP2P, executeGrant, getBalance, CHAIN_CONFIGS } from './blockchain.js';
+import { executeP2P, executeGrant, getBalance, getAllowance, CHAIN_CONFIGS } from './blockchain.js';
 import { findAlternateChain } from './crossChainCheck.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -75,6 +78,83 @@ console.log('└─────────────────────�
 
 initSupabase();
 
+// ============ Rate Limiter ============
+// Tracks command timestamps per user. Max 5 commands per 60 seconds.
+
+const userCommandTimestamps = new Map();
+const RATE_LIMIT_MAX = 5;
+const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
+
+/**
+ * Returns { allowed: true } if the user is within the rate limit.
+ * Returns { allowed: false, retryAfter } (seconds) if they are over it.
+ * @param {string} userId
+ * @returns {{ allowed: boolean, retryAfter?: number }}
+ */
+function checkRateLimit(userId) {
+  const now = Date.now();
+  const timestamps = (userCommandTimestamps.get(userId) || []).filter(t => now - t < RATE_LIMIT_WINDOW_MS);
+
+  if (timestamps.length >= RATE_LIMIT_MAX) {
+    const oldest = timestamps[0];
+    const retryAfter = Math.ceil((RATE_LIMIT_WINDOW_MS - (now - oldest)) / 1000);
+    return { allowed: false, retryAfter };
+  }
+
+  timestamps.push(now);
+  userCommandTimestamps.set(userId, timestamps);
+  return { allowed: true };
+}
+
+// Clean up stale rate limit entries every 5 minutes to prevent memory leaks
+setInterval(() => {
+  const now = Date.now();
+  for (const [userId, timestamps] of userCommandTimestamps.entries()) {
+    const fresh = timestamps.filter(t => now - t < RATE_LIMIT_WINDOW_MS);
+    if (fresh.length === 0) {
+      userCommandTimestamps.delete(userId);
+    } else {
+      userCommandTimestamps.set(userId, fresh);
+    }
+  }
+}, 5 * 60 * 1000);
+
+// ============ Allowance Sanity Check ============
+
+/**
+ * Checks a user's on-chain allowance before a payment attempt.
+ * Returns { ok: true } if allowance is sufficient.
+ * Returns { ok: false, message } with a user-facing warning if it is not.
+ *
+ * Requires blockchain.js to export getAllowance(walletAddress, chain) → number.
+ *
+ * @param {string} walletAddress
+ * @param {number} amount
+ * @param {string} chain
+ * @returns {Promise<{ ok: boolean, message?: string }>}
+ */
+async function checkAllowance(walletAddress, amount, chain) {
+  try {
+    const allowance = await getAllowance(walletAddress, chain);
+
+    if (allowance < amount) {
+      const chainLabel = chain.toUpperCase();
+      const message =
+        `⚠️ **Allowance too low on ${chainLabel}.**\n` +
+        `Your current approved spending limit is **$${allowance.toFixed(2)}** but you're trying to send **$${amount.toFixed(2)}**.\n\n` +
+        `Please increase your allowance at [monipay.xyz](https://monipay.xyz) → **Settings → MoniBot AI & Automation** before sending.`;
+      return { ok: false, message };
+    }
+
+    return { ok: true };
+  } catch (err) {
+    // If the allowance check itself fails (e.g. RPC error), log and allow through —
+    // the blockchain execution will catch the real on-chain error.
+    console.warn(`⚠️ [Allowance] Could not check allowance for ${walletAddress} on ${chain}: ${err.message}`);
+    return { ok: true };
+  }
+}
+
 // ============ Welcome Message Helper ============
 
 /**
@@ -117,7 +197,7 @@ async function sendWelcomeMessage(guild) {
         'No visible blockchain complexity.',
         '',
         '## Activate in 60 Seconds',
-        '- Visit **monipay.xyz**',
+        '- Visit **[monipay.xyz](https://monipay.xyz)**',
         '- Create your MoniTag',
         '- Fund your monipay wallet via Cross-Chain Deposit in Base or BSC or direct stablecoin transfer into your monipay account (USDC on BASE & USDT on BSC)',
         '- Goto Settings - MoniBot AI & Automation',
@@ -126,8 +206,7 @@ async function sendWelcomeMessage(guild) {
         '- Congratulations you are all set to send natural language commands on discord.',
         '',
         '## Example Commands',
-        // Terminal-style coloured code block — Discord only supports plain ```bash
-        // We use ANSI escape codes inside an ansi code fence for terminal colour.
+        // Terminal-style coloured code block using Discord ANSI escape codes
         '```ansi',
         '\u001b[1;34m!\u001b[0m\u001b[1;36mmonibot\u001b[0m \u001b[1;33msend\u001b[0m \u001b[1;32m$50\u001b[0m \u001b[1;37mto\u001b[0m \u001b[1;35m@Jesse\u001b[0m',
         '\u001b[1;34m!\u001b[0m\u001b[1;36mmonibot\u001b[0m \u001b[1;33msend\u001b[0m \u001b[1;32m$50\u001b[0m \u001b[1;37mto the first person to drop their monitag below\u001b[0m',
@@ -136,9 +215,12 @@ async function sendWelcomeMessage(guild) {
         '\u001b[1;34m!\u001b[0m\u001b[1;36mmonibot\u001b[0m \u001b[1;33mbalance\u001b[0m',
         '\u001b[1;34m!\u001b[0m\u001b[1;36mmonibot\u001b[0m \u001b[1;33mhelp\u001b[0m',
         '```',
+        '',
+        '**Powered by MoniPay •** [monipay.xyz](https://monipay.xyz)',
       ].join('\n')
     )
     .setColor(0x0066FF)
+    .setURL('https://monipay.xyz')
     .setFooter({ text: 'Powered by MoniPay • monipay.xyz' });
 
   // Attach the banner image if it loaded successfully
@@ -240,6 +322,71 @@ async function sendWelcomeMessage(guild) {
   }
 }
 
+// ============ Scheduled Job Recovery Notifier ============
+
+/**
+ * On bot restart, fetch all pending (not yet executed) scheduled jobs and
+ * notify each job's channel that the bot is back online and the job is still queued.
+ *
+ * Requires `getPendingScheduledJobs` exported from database.js.
+ * It should return jobs with status = 'pending' and scheduledAt in the future.
+ */
+async function notifyScheduledJobRecovery() {
+  try {
+    const pendingJobs = await getPendingScheduledJobs();
+    if (!pendingJobs || pendingJobs.length === 0) {
+      console.log('📋 [Recovery] No pending scheduled jobs to notify.');
+      return;
+    }
+
+    console.log(`📋 [Recovery] Found ${pendingJobs.length} pending scheduled job(s). Sending recovery notices...`);
+
+    for (const job of pendingJobs) {
+      const channelId = job.payload?.channelId;
+      if (!channelId) continue;
+
+      const channel = client.channels.cache.get(channelId);
+      if (!channel) {
+        console.warn(`⚠️ [Recovery] Could not find channel ${channelId} for job ${job.id}`);
+        continue;
+      }
+
+      const senderTag = job.payload?.senderPayTag || 'Unknown';
+      const amount = job.payload?.command?.amount || job.payload?.amount || '?';
+      const recipients = job.payload?.command?.recipients || job.payload?.recipients || [];
+      const scheduledAt = job.scheduled_at ? new Date(job.scheduled_at) : null;
+      const unixTs = scheduledAt ? Math.floor(scheduledAt.getTime() / 1000) : null;
+
+      const embed = new EmbedBuilder()
+        .setTitle('🔄 MoniBot is Back Online!')
+        .setDescription(
+          `Hey **@${senderTag}** — MoniBot just restarted, but don't worry: your scheduled payment is **still queued** and will execute as planned.`
+        )
+        .addFields(
+          { name: '💸 Amount', value: `$${amount}`, inline: true },
+          { name: '👤 To', value: recipients.map(r => `@${r}`).join(', ') || 'N/A', inline: true },
+          {
+            name: '⏰ Scheduled For',
+            value: unixTs ? `<t:${unixTs}:F> (<t:${unixTs}:R>)` : 'Unknown',
+            inline: false,
+          },
+          { name: '✅ Status', value: 'Queued — no action needed', inline: false },
+        )
+        .setColor(0x0052FF)
+        .setFooter({ text: `Job ID: ${job.id} | Powered by MoniPay` });
+
+      try {
+        await channel.send({ embeds: [embed] });
+        console.log(`📬 [Recovery] Notified channel ${channelId} for job ${job.id}`);
+      } catch (sendErr) {
+        console.error(`❌ [Recovery] Could not notify channel ${channelId} for job ${job.id}: ${sendErr.message}`);
+      }
+    }
+  } catch (err) {
+    console.error('❌ [Recovery] Failed to fetch pending scheduled jobs:', err.message);
+  }
+}
+
 // ============ Event: Ready ============
 
 client.once(Events.ClientReady, async (c) => {
@@ -258,6 +405,9 @@ client.once(Events.ClientReady, async (c) => {
       console.error(`❌ [Welcome/Restart] Error for guild "${guild.name}": ${err.message}`);
     }
   }
+
+  // Notify users with pending scheduled jobs that bot is back online
+  await notifyScheduledJobRecovery();
 
   // Start scheduled job notification poller only after client is ready
   setInterval(pollScheduledJobResults, 30000);
@@ -303,6 +453,16 @@ client.on(Events.MessageCreate, async (message) => {
   // Remove prefix to get the actual message
   const cleaned = content.replace(/^!monibot\s*/i, '').replace(/<@!\d+>\s*/g, '').replace(/<@\d+>\s*/g, '').trim();
   if (!cleaned) return;
+
+  // ── Rate limit check ────────────────────────────────────────────────────
+  const rateCheck = checkRateLimit(message.author.id);
+  if (!rateCheck.allowed) {
+    await message.reply(
+      `⏱️ **Slow down!** You're sending commands too fast. Please wait **${rateCheck.retryAfter}s** before trying again.\n` +
+      `_(Limit: ${RATE_LIMIT_MAX} commands per minute)_`
+    );
+    return;
+  }
 
   // Check for time-aware scheduling via edge function (supports complex expressions)
   const scheduleResult = await parseScheduleViaEdge(content, getSupabase());
@@ -470,6 +630,13 @@ async function handleP2P(message, command) {
     return;
   }
 
+  // ── Allowance sanity check ───────────────────────────────────────────────
+  const allowanceCheck = await checkAllowance(senderProfile.wallet_address, command.amount, command.chain);
+  if (!allowanceCheck.ok) {
+    await message.reply(allowanceCheck.message);
+    return;
+  }
+
   // Log command
   const cmd = await logCommand({
     platform: 'discord',
@@ -551,6 +718,16 @@ async function handleP2P(message, command) {
       const alt = await findAlternateChain(senderProfile.wallet_address, command.amount, activeChain);
 
       if (alt && !alt.needsAllowance) {
+        // Allowance check on the alternate chain before rerouting
+        const altAllowanceCheck = await checkAllowance(senderProfile.wallet_address, command.amount, alt.chain);
+        if (!altAllowanceCheck.ok) {
+          await processingMsg.edit(
+            `🔄 Tried to reroute to **${alt.chain.toUpperCase()}** but your allowance is too low there too.\n\n${altAllowanceCheck.message}`
+          );
+          await updateCommandStatus(cmd?.id, 'failed', null, 'Allowance too low on all chains');
+          return;
+        }
+
         // Auto-reroute to alternate chain
         await processingMsg.edit(`🔄 Insufficient funds on ${activeChain}. Rerouting to **${alt.chain.toUpperCase()}** (${alt.balance.toFixed(2)} ${alt.symbol})...`);
         activeChain = alt.chain;
@@ -646,6 +823,14 @@ async function handleP2PMulti(message, command) {
     return;
   }
 
+  // ── Allowance sanity check (total = per-person × recipient count) ─────────
+  const totalAmount = command.amount * command.recipients.length;
+  const allowanceCheck = await checkAllowance(senderProfile.wallet_address, totalAmount, command.chain);
+  if (!allowanceCheck.ok) {
+    await message.reply(allowanceCheck.message);
+    return;
+  }
+
   const processingMsg = await message.reply(`⏳ Sending **$${command.amount}** each to **${command.recipients.length}** recipients...`);
 
   const results = [];
@@ -684,32 +869,36 @@ async function handleP2PMulti(message, command) {
       if (error.message.includes('ERROR_BALANCE') || error.message.includes('ERROR_ALLOWANCE')) {
         const alt = await findAlternateChain(senderProfile.wallet_address, command.amount, activeChain);
         if (alt && !alt.needsAllowance) {
-          try {
-            const { hash, fee } = await executeP2P(
-              senderProfile.wallet_address,
-              recipientProfile.wallet_address,
-              command.amount,
-              `${message.id}_${tag}`,
-              alt.chain
-            );
+          // Allowance check on the alternate chain
+          const altAllowanceCheck = await checkAllowance(senderProfile.wallet_address, command.amount, alt.chain);
+          if (altAllowanceCheck.ok) {
+            try {
+              const { hash, fee } = await executeP2P(
+                senderProfile.wallet_address,
+                recipientProfile.wallet_address,
+                command.amount,
+                `${message.id}_${tag}`,
+                alt.chain
+              );
 
-            await logMonibotTransaction({
-              senderId: senderProfile.id,
-              receiverId: recipientProfile.id,
-              amount: command.amount,
-              fee,
-              txHash: hash,
-              type: 'p2p_command',
-              payerPayTag: senderProfile.pay_tag,
-              recipientPayTag: recipientProfile.pay_tag,
-              chain: alt.chain.toUpperCase(),
-            });
+              await logMonibotTransaction({
+                senderId: senderProfile.id,
+                receiverId: recipientProfile.id,
+                amount: command.amount,
+                fee,
+                txHash: hash,
+                type: 'p2p_command',
+                payerPayTag: senderProfile.pay_tag,
+                recipientPayTag: recipientProfile.pay_tag,
+                chain: alt.chain.toUpperCase(),
+              });
 
-            results.push({ tag, status: 'success', hash, rerouted: `${activeChain}→${alt.chain}`, chain: alt.chain });
-            continue;
-          } catch (retryError) {
-            results.push({ tag, status: 'failed', reason: retryError.message.split(':')[0] });
-            continue;
+              results.push({ tag, status: 'success', hash, rerouted: `${activeChain}→${alt.chain}`, chain: alt.chain });
+              continue;
+            } catch (retryError) {
+              results.push({ tag, status: 'failed', reason: retryError.message.split(':')[0] });
+              continue;
+            }
           }
         }
       }
@@ -744,6 +933,13 @@ async function handleGiveaway(message, command) {
   }
 
   const totalBudget = command.amount * command.maxParticipants;
+
+  // ── Allowance sanity check (total giveaway budget) ───────────────────────
+  const allowanceCheck = await checkAllowance(senderProfile.wallet_address, totalBudget, command.chain);
+  if (!allowanceCheck.ok) {
+    await message.reply(allowanceCheck.message);
+    return;
+  }
 
   // Log the giveaway command
   await logCommand({
@@ -898,6 +1094,18 @@ async function handleScheduledCommand(message, scheduleResult, originalText) {
   if (!cmd || !cmd.type || cmd.type === 'help' || cmd.type === 'link' || cmd.type === 'balance') {
     await message.reply('❌ I can only schedule payment commands (send, giveaway). Try: `!monibot send $5 to @alice tomorrow at 3pm`');
     return;
+  }
+
+  // ── Allowance sanity check for scheduled commands ─────────────────────────
+  // Warn the user now so they have time to fix it before execution.
+  if (cmd.amount && cmd.chain) {
+    const allowanceCheck = await checkAllowance(senderProfile.wallet_address, cmd.amount, cmd.chain);
+    if (!allowanceCheck.ok) {
+      await message.reply(
+        `⚠️ **Heads up!** Your command has been queued, but:\n\n${allowanceCheck.message}\n\n` +
+        `Please fix this before the scheduled time or the payment will fail.`
+      );
+    }
   }
 
   // Write to scheduled_jobs table

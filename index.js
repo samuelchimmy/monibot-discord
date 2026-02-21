@@ -567,7 +567,7 @@ async function handleLink(message) {
     .setTitle('🔗 Link Your MoniPay Account')
     .setDescription('Connect your Discord to your MoniPay wallet:')
     .addFields(
-      { name: 'Step 1', value: 'Go to [monipay.lovable.app](https://monipay.lovable.app)', inline: false },
+      { name: 'Step 1', value: 'Go to [monipay.xyz](https://monipay.xyz)', inline: false },
       { name: 'Step 2', value: 'Open **Settings** → **MoniBot AI**', inline: false },
       { name: 'Step 3', value: 'Click **Link Discord** and authorize', inline: false },
     )
@@ -606,7 +606,7 @@ async function handleP2P(message, command) {
   const recipientTag = command.recipients[0];
   const recipientProfile = await getProfileByMonitag(recipientTag);
   if (!recipientProfile) {
-    await message.reply(`❌ MoniTag **@${recipientTag}** not found. They need to sign up at monipay.lovable.app`);
+    await message.reply(`❌ MoniTag **@${recipientTag}** not found. They need to sign up at monipay.xyz`);
     return;
   }
 
@@ -776,7 +776,7 @@ async function handleP2P(message, command) {
         }
       } else if (alt && alt.needsAllowance) {
         await updateCommandStatus(cmd?.id, 'failed', null, `Funds on ${alt.chain} but no allowance`);
-        await processingMsg.edit(`❌ Insufficient funds on ${command.chain}. You have **${alt.balance.toFixed(2)} ${alt.symbol}** on ${alt.chain.toUpperCase()} but need to set your allowance first at monipay.lovable.app → Settings → MoniBot AI.`);
+        await processingMsg.edit(`❌ Insufficient funds on ${command.chain}. You have **${alt.balance.toFixed(2)} ${alt.symbol}** on ${alt.chain.toUpperCase()} but need to set your allowance first at monipay.xyz → Settings → MoniBot AI.`);
         return;
       }
     }
@@ -786,11 +786,11 @@ async function handleP2P(message, command) {
     let errorMsg = '❌ Something went wrong processing your payment. Please try again.';
     if (error.message.includes('ERROR_BALANCE')) {
       const aiErr = await aiTransactionReply({ type: 'error_balance', sender: senderProfile.pay_tag, amount: command.amount });
-      errorMsg = aiErr || 'Your balance is too low on all available chains to complete this payment. Please fund your wallet at monipay.lovable.app.';
+      errorMsg = aiErr || 'Your balance is too low on all available chains to complete this payment. Please fund your wallet at monipay.xyz.';
     }
     if (error.message.includes('ERROR_ALLOWANCE')) {
       const aiErr = await aiTransactionReply({ type: 'error_allowance', sender: senderProfile.pay_tag, chain: command.chain });
-      errorMsg = aiErr || 'You haven\'t approved MoniBot to spend your tokens yet. Head to monipay.lovable.app → Settings → MoniBot AI to set your allowance.';
+      errorMsg = aiErr || 'You haven\'t approved MoniBot to spend your tokens yet. Head to monipay.xyz → Settings → MoniBot AI to set your allowance.';
     }
     if (error.message.includes('ERROR_REVERTED')) {
       const aiErr = await aiTransactionReply({ type: 'error_reverted', sender: senderProfile.pay_tag, txHash: error.message });
@@ -981,7 +981,7 @@ async function handleGiveaway(message, command) {
 
     const recipientProfile = await getProfileByMonitag(claimTag);
     if (!recipientProfile) {
-      await reply.reply(`❌ @${claimTag} not found on MoniPay. Sign up at monipay.lovable.app first!`);
+      await reply.reply(`❌ @${claimTag} not found on MoniPay. Sign up at monipay.xyz first!`);
       return;
     }
 
@@ -1027,7 +1027,7 @@ async function handleGiveaway(message, command) {
         await reply.reply('❌ Giveaway ended — sender ran out of funds.');
         collector.stop('funds');
       } else if (error.message.includes('ERROR_ALLOWANCE')) {
-        await reply.reply('❌ Giveaway paused — sender needs to set allowance at monipay.lovable.app → Settings → MoniBot AI.');
+        await reply.reply('❌ Giveaway paused — sender needs to set allowance at monipay.xyz → Settings → MoniBot AI.');
         collector.stop('allowance');
       } else if (error.message.includes('rate limit') || error.message.includes('429')) {
         await reply.reply('⏳ Network is busy — please try claiming again in a moment.');
